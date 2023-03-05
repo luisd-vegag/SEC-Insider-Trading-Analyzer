@@ -10,6 +10,7 @@ import plotly.subplots as sp
 import plotly.express as px
 from typing import List
 from bs4 import BeautifulSoup
+import pyarrow.parquet as pq
 
 
 class Form4:
@@ -29,6 +30,7 @@ class Form4:
         """
         base_url = "https://www.sec.gov"
         base_path = "/Archives/edgar/data/"
+        self.parquet_path = 'trading-data'
         self.base_url = base_url
         self.base_path = base_path
         self.cik = cik.lstrip('0')
@@ -37,6 +39,7 @@ class Form4:
         self.operation_ids = set()
         self.form4_links = set()
         self.data = []
+        self.prev_operation_ids = []
         # set headers to simulate browser request
         self.headers = {
             "Connection": "close",
@@ -59,7 +62,7 @@ class Form4:
         while id_try == True:
             if 'SEC.gov | Request Rate Threshold Exceeded' in title:
                 print(
-                    f"CIK: '{self.cik}'| Fail to scrape form 4 due to SEC.gov Request Rate Threshold Exceeded. Retrying in 60 seg.")
+                    f"CIK: '{self.cik}'| [1]Fail to scrape form 4 due to SEC.gov Request Rate Threshold Exceeded. Retrying in 60 seg.")
                 time.sleep(60)
             else:
                 id_try = False
@@ -87,7 +90,31 @@ class Form4:
                         ref = cols[0].find("a", href=True)
                     if ref:
                         self.operation_ids.add(ref["href"].split("/")[-1])
-        print(f"CIK: '{self.cik}'| Found {len(self.operation_ids)} operations.")
+        self.get_records_operation_ids()
+        if len(self.prev_operation_ids) > 0:
+            self.operation_ids = [
+                op_id for op_id in self.operation_ids if op_id not in self.prev_operation_ids]
+        print(
+            f"CIK: '{self.cik}'| Found {len(self.operation_ids)} new operations.")
+
+    def get_records_operation_ids(self):
+        if os.path.exists(self.parquet_path):
+            # Read the Parquet files into a pandas DataFrame
+            df = pd.read_parquet(self.parquet_path)
+            df = df[df['parent_cik'] == self.cik]
+            # Read the form4_link column from the DataFrame
+            form4_links_col = df['form4_link']
+
+            # Generate a list with the operation_ids, extracted from the form4_links_col
+            prev_operation_ids = []
+            for form4_link in form4_links_col:
+                prev_operation_ids.append(form4_link.split("/")[-2])
+
+            # Convert the list to a set to remove duplicates, then convert back to a list and sort
+            prev_operation_ids = list(set(prev_operation_ids))
+            prev_operation_ids.sort()
+
+            self.prev_operation_ids = prev_operation_ids
 
     def scrape_form4(self) -> None:
         """
@@ -112,7 +139,7 @@ class Form4:
 
                 if 'SEC.gov | Request Rate Threshold Exceeded' in title:
                     print(
-                        f"CIK: '{self.cik}'| Fail to scrape form 4 due to SEC.gov Request Rate Threshold Exceeded. Retrying in 60 seg.")
+                        f"CIK: '{self.cik}'| [2]Fail to scrape form 4 due to SEC.gov Request Rate Threshold Exceeded. Retrying in 60 seg.")
                     time.sleep(60)
                 else:
                     id_try = False
@@ -137,6 +164,7 @@ class Form4:
 
                 # find the link to the FORM 4 document
                 form4_link = None
+                form4_links = []
                 table = soup3.find(
                     "table", {"class": "tableFile", "summary": "Document Format Files"})
                 if table:
@@ -148,7 +176,9 @@ class Form4:
                                     form4_link = self.base_url + self.base_path + self.cik + \
                                         '/' + operation_id + '/' + \
                                         a["href"].split("/")[-1]
-                                    self.get_form4_data(form4_link)
+                                    if form4_link not in form4_links:
+                                        self.get_form4_data(form4_link)
+                                        form4_links.append(form4_link)
                                     break
                 end_time = time.time()
 
@@ -161,11 +191,14 @@ class Form4:
                     variance = statistics.variance(response_times)
 
                 if variance > 0.5:
-                    print(f"CIK: '{self.cik}'| Increase delay by 1 sec")
                     delay += 1
+                    print(
+                        f"CIK: '{self.cik}'| Increase delay by 1 sec. to {delay} sec.")
+
                 elif variance < 0.4 and delay > 0:
-                    print(f"CIK: '{self.cik}'| Decrease delay by 1 sec")
                     delay -= 1
+                    print(
+                        f"CIK: '{self.cik}'| Decrease delay by 1 sec. to {delay} sec.")
 
                 time.sleep(delay)
 

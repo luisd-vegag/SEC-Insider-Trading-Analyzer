@@ -20,7 +20,7 @@ class TradingData:
         self.cik = cik
         self.data = Form4(cik, start_date, end_date).data
         if len(self.data) > 0:
-            self.parquet_path = 'trading-data.parquet'
+            self.parquet_path = 'trading-data'
             self.add_stock_data()
             self.record_data()
         else:
@@ -61,7 +61,6 @@ class TradingData:
         ticker_history_pd = ticker_history_pd.rename(
             columns={c: c.replace(' ', '_').lower() for c in ticker_history_pd.columns})
         stock_prices_df = pd.DataFrame(ticker_history_pd)
-        # stock_prices_df = stock_prices_df.reset_index()
         stock_prices_df['date'] = pd.to_datetime(
             stock_prices_df['index'], format='%Y-%m-%d')
 
@@ -103,8 +102,6 @@ class TradingData:
         return pd_df
 
     def record_data(self):
-        print(
-            f'Redorced: {self.cik}--------------------------------------------------------')
         df = pd.DataFrame(self.data)
         # Define a dictionary with the data types for each column
         schema = {
@@ -197,14 +194,39 @@ class TradingData:
                 path=self.parquet_path, engine='pyarrow', schema=pa_schema)
             print(f"Existing df: {len(existing_df)}")
             df = df[~df['hash'].isin(existing_df['hash'])].dropna()
-            # Remove the original index column from the DataFrame
-            df = df.reset_index(drop=True)
 
-        # Write the DataFrame to a file-based Parquet file
+        # Write the DataFrame to a directory-based Parquet file
         if len(df) > 0:
             print(f"New df: {len(df)}")
+            # Remove the original index column from the DataFrame
+            df = df.reset_index(drop=True)
             df.to_parquet(self.parquet_path, partition_cols=[
                           'parent_cik'], engine='pyarrow')
+
+            # Read the previous DataFrame from a Parquet file
+            prev_df = pd.read_parquet(self.parquet_path)
+
+            # Filter the DataFrame to keep only rows with a matching parent CIK
+            prev_df = prev_df[prev_df['parent_cik'] == self.cik]
+
+            # Convert the 'transaction_date' column to a datetime format
+            prev_df['transaction_date'] = pd.to_datetime(
+                prev_df['transaction_date'], format='%Y-%m-%d')
+
+            # Filter the DataFrame to keep only rows within the specified date range
+            mask = (prev_df['transaction_date'] >= self.start_date) & (
+                prev_df['transaction_date'] <= self.end_date)
+            prev_df = prev_df.loc[mask]
+
+            # Reorder the columns of the previous DataFrame to match the current DataFrame
+            prev_df = prev_df[df.columns]
+
+            # Concatenate the current DataFrame with the filtered previous DataFrame
+            df = pd.concat([df, prev_df], ignore_index=True)
+
+            # Convert the resulting DataFrame to a list of dictionaries
+            self.data = df.to_dict(orient='records')
+
         else:
             print(f"New df: {len(df)}")
 
