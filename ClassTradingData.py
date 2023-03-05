@@ -10,23 +10,28 @@ import plotly.subplots as sp
 import plotly.express as px
 from typing import List
 from bs4 import BeautifulSoup
-
+import hashlib
+import pyarrow as pa
 from ClassForm4 import Form4
 
 
 class TradingData:
-
     def __init__(self, cik: str, start_date: str = None, end_date: str = None) -> None:
-        self.data = {}
-        self.form4 = Form4(cik, start_date, end_date)
-        self.add_stock_data()
+        self.cik = cik
+        self.data = Form4(cik, start_date, end_date).data
+        if len(self.data) > 0:
+            self.parquet_path = 'trading-data.parquet'
+            self.add_stock_data()
+            self.record_data()
+        else:
+            print(f"No data to save for {self.cik}")
 
     def add_stock_data(self) -> None:
         """
         Adds stock data to the Form 4 data and updates the Form4 instance.
         """
 
-        df = pd.DataFrame(self.form4.data)
+        df = pd.DataFrame(self.data)
         df = df[df['ticker'].notnull()]
         df['transaction_date'] = pd.to_datetime(
             df['transaction_date'], format='%Y-%m-%d')
@@ -81,6 +86,127 @@ class TradingData:
                 df[col_name] = col_values.apply(lambda x: round(x, 4))
 
         self.data = df.to_dict(orient='records')
+
+    @ staticmethod
+    def generate_hash(pd_df):
+
+        # Remove the original index column from the DataFrame
+        pd_df = pd_df.reset_index(drop=True)
+
+        # Sort the columns in the DataFrame before computing the hash
+        pd_df = pd_df.sort_index(axis=1)
+
+        # Generate a new column with a concatenated string and a SHA-2 hash for each row
+        pd_df['hash'] = pd_df.apply(lambda row: hashlib.sha256(
+            str(row.values).encode('utf-8')).hexdigest(), axis=1)
+
+        return pd_df
+
+    def record_data(self):
+        print(
+            f'Redorced: {self.cik}--------------------------------------------------------')
+        df = pd.DataFrame(self.data)
+        # Define a dictionary with the data types for each column
+        schema = {
+            'cik': 'int',
+            'parent_cik': 'int',
+            'name': 'string',
+            'ticker': 'string',
+            'rptOwnerName': 'string',
+            'rptOwnerCik': 'string',
+            'isDirector': 'bool',
+            'isOfficer': 'bool',
+            'isTenPercentOwner': 'bool',
+            'isOther': 'bool',
+            'officerTitle': 'string',
+            'security_title': 'string',
+            'transaction_date': 'string',
+            'form_type': 'int',
+            'code': 'string',
+            'equity_swap': 'float',
+            'shares': 'float',
+            'acquired_disposed_code': 'string',
+            'shares_owned_following_transaction': 'float',
+            'direct_or_indirect_ownership': 'string',
+            'form4_link': 'string',
+            'open': 'float',
+            'high': 'float',
+            'low': 'float',
+            'close': 'float',
+            'adj_close': 'float',
+            'volume': 'float',
+            'daily_return': 'float',
+            'percent_change': 'float',
+            'range': 'float',
+            'average_price': 'float',
+            'shares_value_usd': 'float',
+        }
+
+        # Loop over the columns in the dictionary and convert their data types
+        for col, dtype in schema.items():
+            if col in df.columns:
+                df[col] = df[col].astype(dtype)
+
+        # Call the generate_hash method on the class itself, not on an instance of the class
+        df = TradingData.generate_hash(df)
+        # Select only the unique rows based on the 'hash' column
+        df = df.drop_duplicates(subset=['hash'])
+
+        print(f"Incoming df: {len(df)}")
+        # Check if the Parquet file already exists
+        if os.path.isdir(self.parquet_path):
+
+            pa_schema = pa.schema([
+                pa.field('cik', pa.int64()),
+                pa.field('parent_cik', pa.int64()),
+                pa.field('name', pa.string()),
+                pa.field('ticker', pa.string()),
+                pa.field('rptOwnerName', pa.string()),
+                pa.field('rptOwnerCik', pa.string()),
+                pa.field('isDirector', pa.bool_()),
+                pa.field('isOfficer', pa.bool_()),
+                pa.field('isTenPercentOwner', pa.bool_()),
+                pa.field('isOther', pa.bool_()),
+                pa.field('officerTitle', pa.string()),
+                pa.field('security_title', pa.string()),
+                pa.field('transaction_date', pa.string()),
+                pa.field('form_type', pa.int64()),
+                pa.field('code', pa.string()),
+                pa.field('equity_swap', pa.float64()),
+                pa.field('shares', pa.float64()),
+                pa.field('acquired_disposed_code', pa.string()),
+                pa.field('shares_owned_following_transaction', pa.float64()),
+                pa.field('direct_or_indirect_ownership', pa.string()),
+                pa.field('form4_link', pa.string()),
+                pa.field('open', pa.float64()),
+                pa.field('high', pa.float64()),
+                pa.field('low', pa.float64()),
+                pa.field('close', pa.float64()),
+                pa.field('adj_close', pa.float64()),
+                pa.field('volume', pa.float64()),
+                pa.field('daily_return', pa.float64()),
+                pa.field('percent_change', pa.float64()),
+                pa.field('range', pa.float64()),
+                pa.field('average_price', pa.float64()),
+                pa.field('shares_value_usd', pa.float64()),
+                pa.field('hash', pa.string()),
+            ])
+
+            # Read the existing data from the Parquet file
+            existing_df = pd.read_parquet(
+                path=self.parquet_path, engine='pyarrow', schema=pa_schema)
+            print(f"Existing df: {len(existing_df)}")
+            df = df[~df['hash'].isin(existing_df['hash'])].dropna()
+            # Remove the original index column from the DataFrame
+            df = df.reset_index(drop=True)
+
+        # Write the DataFrame to a file-based Parquet file
+        if len(df) > 0:
+            print(f"New df: {len(df)}")
+            df.to_parquet(self.parquet_path, partition_cols=[
+                          'parent_cik'], engine='pyarrow')
+        else:
+            print(f"New df: {len(df)}")
 
     def inside_traiding_impact_plot(self) -> None:
         """

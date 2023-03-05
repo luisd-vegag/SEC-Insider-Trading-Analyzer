@@ -32,7 +32,6 @@ class Form4:
         self.base_url = base_url
         self.base_path = base_path
         self.cik = cik.lstrip('0')
-        self.parent_cik = cik.zfill(10)
         self.start_date = start_date
         self.end_date = end_date
         self.operation_ids = set()
@@ -265,8 +264,8 @@ class Form4:
             direct_or_indirect_ownership = direct_or_indirect_ownership_tag.text if direct_or_indirect_ownership_tag else ""
 
             self.data.append({
-                "cik": cik_file,
-                "parent_cik": self.parent_cik,
+                "cik": cik_file.lstrip('0'),
+                "parent_cik": self.cik,
                 "name": name,
                 "ticker": ticker,
                 "rptOwnerName": rptOwnerName,
