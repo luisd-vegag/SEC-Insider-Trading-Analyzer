@@ -130,3 +130,6 @@ dmypy.json
 
 # temporary files
 tmp/
+
+# vsc files
+.vscode/

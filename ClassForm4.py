@@ -190,15 +190,15 @@ class Form4:
                 else:
                     variance = statistics.variance(response_times)
 
-                if variance > 0.5:
+                if variance > 0.4:
                     delay += 1
                     print(
-                        f"CIK: '{self.cik}'| Increase delay by 1 sec. to {delay} sec.")
+                        f"CIK: '{self.cik}'| Increase delay by 1 to {delay} seconds.")
 
-                elif variance < 0.4 and delay > 0:
+                elif variance < 0.2 and delay > 0:
                     delay -= 1
                     print(
-                        f"CIK: '{self.cik}'| Decrease delay by 1 sec. to {delay} sec.")
+                        f"CIK: '{self.cik}'| Decrease delay by 1 to {delay} seconds.")
 
                 time.sleep(delay)
 

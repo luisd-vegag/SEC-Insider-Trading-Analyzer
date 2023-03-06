@@ -27,13 +27,21 @@ def main_prev(ciks, start_date=None, end_date=None):
 
 
 def main(ciks, start_date=None, end_date=None, parallel_exc=2):
+    batch_delay = 1/parallel_exc
     # create a pool of processes
     with Pool(processes=parallel_exc) as pool:
         # create a partial function with the start_date and end_date arguments fixed
-        create_data_with_dates = partial(
+        create_data_pool = partial(
             create_trading_data, start_date=start_date, end_date=end_date)
-        # call the create_data_with_dates function on each cik value in parallel using the pool.map method
-        pool.map(create_data_with_dates, ciks)
+        # call the create_data_pool function on the first half of the cik values in parallel using the pool.map method with a time delay between each process
+        for i, cik in enumerate(ciks[:len(ciks)//2]):
+            if i != 0:
+                time.sleep(batch_delay)
+            pool.apply_async(create_data_pool, args=(cik,))
+        pool.map(create_data_pool, ciks[len(ciks)//2:])
+        # close the pool of processes and wait for all processes to finish
+        pool.close()
+        pool.join()
 
 
 if __name__ == '__main__':
