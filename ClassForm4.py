@@ -10,7 +10,8 @@ import plotly.subplots as sp
 import plotly.express as px
 from typing import List
 from bs4 import BeautifulSoup
-import pyarrow.parquet as pq
+import hashlib
+import pyarrow as pa
 
 
 class Form4:
@@ -30,7 +31,7 @@ class Form4:
         """
         base_url = "https://www.sec.gov"
         base_path = "/Archives/edgar/data/"
-        self.parquet_path = 'trading-data'
+        self.parquet_path = 'system/form4/data'
         self.base_url = base_url
         self.base_path = base_path
         self.cik = cik.lstrip('0')
@@ -39,7 +40,9 @@ class Form4:
         self.operation_ids = set()
         self.form4_links = set()
         self.data = []
-        self.prev_operation_ids = []
+        self.scraped_operation_ids_path = 'system/form4/scraped_operation_ids'
+        self.scraped_operation_ids = []
+        self.records_operation_ids = []
         # set headers to simulate browser request
         self.headers = {
             "Connection": "close",
@@ -90,31 +93,75 @@ class Form4:
                         ref = cols[0].find("a", href=True)
                     if ref:
                         self.operation_ids.add(ref["href"].split("/")[-1])
-        self.get_records_operation_ids()
-        if len(self.prev_operation_ids) > 0:
+        self.filter_operation_ids()
+        if len(self.records_operation_ids) > 0:
             self.operation_ids = [
-                op_id for op_id in self.operation_ids if op_id not in self.prev_operation_ids]
+                op_id for op_id in self.operation_ids if op_id not in self.records_operation_ids]
         print(
             f"CIK: '{self.cik}'| Found {len(self.operation_ids)} new operations.")
+
+    def filter_operation_ids(self):
+        # Read the Parquet files partitioned by 'cik'
+        self.get_scraped_operation_ids()
+        if len(self.scraped_operation_ids) > 0:
+            # Remove already saved operation IDs
+            self.operation_ids = [
+                x for x in self.operation_ids if x not in self.scraped_operation_ids]
+
+    def save_scraped_operation_ids(self):
+        # Create a DataFrame with ids and current date
+        df = pd.DataFrame({'date': datetime.date.today(),
+                           'cik': self.cik, 'operation_id': list(self.operation_ids)})
+
+        # Define the schema with data types for each column
+        schema = pa.schema([
+            ('date', pa.date32()),
+            ('cik', pa.string()),
+            ('operation_id', pa.string())
+        ])
+
+        # Save the DataFrame as a Parquet file partitioned by 'cik'
+        df.to_parquet(self.scraped_operation_ids_path,
+                      partition_cols=['cik'], schema=schema)
+
+    def get_scraped_operation_ids(self):
+        if os.path.exists(self.scraped_operation_ids_path):
+            # Define the schema with data types for each column
+            schema = pa.schema([
+                ('date', pa.date32()),
+                ('cik', pa.string()),
+                ('operation_id', pa.string())
+            ])
+
+            # Read the Parquet files partitioned by 'cik'
+            df = pd.read_parquet(
+                self.scraped_operation_ids_path,
+                columns=['operation_id'],
+                filters=[('cik', '=', self.cik)],
+                schema=schema
+            )
+
+            # Convert operation_id column to a one-dimensional Python list
+            self.scraped_operation_ids = list(df['operation_id'])
 
     def get_records_operation_ids(self):
         if os.path.exists(self.parquet_path):
             # Read the Parquet files into a pandas DataFrame
-            df = pd.read_parquet(self.parquet_path)
-            df = df[df['parent_cik'] == self.cik]
+            df = pd.read_parquet(self.parquet_path, filters=[
+                                 ('parent_cik', '=', self.cik)])
             # Read the form4_link column from the DataFrame
             form4_links_col = df['form4_link']
 
             # Generate a list with the operation_ids, extracted from the form4_links_col
-            prev_operation_ids = []
+            records_operation_ids = []
             for form4_link in form4_links_col:
-                prev_operation_ids.append(form4_link.split("/")[-2])
+                records_operation_ids.append(form4_link.split("/")[-2])
 
             # Convert the list to a set to remove duplicates, then convert back to a list and sort
-            prev_operation_ids = list(set(prev_operation_ids))
-            prev_operation_ids.sort()
+            records_operation_ids = list(set(records_operation_ids))
+            records_operation_ids.sort()
 
-            self.prev_operation_ids = prev_operation_ids
+            self.records_operation_ids = records_operation_ids
 
     def scrape_form4(self) -> None:
         """
@@ -201,6 +248,7 @@ class Form4:
                         f"CIK: '{self.cik}'| Decrease delay by 1 to {delay} seconds.")
 
                 time.sleep(delay)
+        self.sync_system_data()
 
     def get_form4_data(self, form4_link: str) -> List[dict]:
         """
@@ -340,3 +388,125 @@ class Form4:
             print(f"CIK: '{self.cik}'| Saved Form 4 data.")
         else:
             print(f"CIK: '{self.cik}'| There is not Form 4 data.")
+
+    @ staticmethod
+    def generate_hash(pd_df):
+
+        # Remove the original index column from the DataFrame
+        pd_df = pd_df.reset_index(drop=True)
+
+        # Sort the columns in the DataFrame before computing the hash
+        pd_df = pd_df.sort_index(axis=1)
+
+        # Generate a new column with a concatenated string and a SHA-2 hash for each row
+        pd_df['hash'] = pd_df.apply(lambda row: hashlib.sha256(
+            str(row.values).encode('utf-8')).hexdigest(), axis=1)
+
+        return pd_df
+
+    def sync_system_data(self):
+        df = pd.DataFrame(self.data)
+        # Define a dictionary with the data types for each column
+        schema = {
+            'cik': 'int',
+            'parent_cik': 'int',
+            'name': 'string',
+            'ticker': 'string',
+            'rptOwnerName': 'string',
+            'rptOwnerCik': 'string',
+            'isDirector': 'bool',
+            'isOfficer': 'bool',
+            'isTenPercentOwner': 'bool',
+            'isOther': 'bool',
+            'officerTitle': 'string',
+            'security_title': 'string',
+            'transaction_date': 'string',
+            'form_type': 'int',
+            'code': 'string',
+            'equity_swap': 'float',
+            'shares': 'float',
+            'acquired_disposed_code': 'string',
+            'shares_owned_following_transaction': 'float',
+            'direct_or_indirect_ownership': 'string',
+            'form4_link': 'string',
+        }
+
+        # Loop over the columns in the dictionary and convert their data types
+        for col, dtype in schema.items():
+            if col in df.columns:
+                df[col] = df[col].astype(dtype)
+
+        # Call the generate_hash method on the class itself, not on an instance of the class
+        df = Form4.generate_hash(df)
+        # Select only the unique rows based on the 'hash' column
+        df = df.drop_duplicates(subset=['hash'])
+
+        print(f"Incoming df: {len(df)}")
+        # Check if the Parquet file already exists
+        if os.path.isdir(self.parquet_path):
+            pa_schema = pa.schema([
+                pa.field('cik', pa.int64()),
+                pa.field('parent_cik', pa.int64()),
+                pa.field('name', pa.string()),
+                pa.field('ticker', pa.string()),
+                pa.field('rptOwnerName', pa.string()),
+                pa.field('rptOwnerCik', pa.string()),
+                pa.field('isDirector', pa.bool_()),
+                pa.field('isOfficer', pa.bool_()),
+                pa.field('isTenPercentOwner', pa.bool_()),
+                pa.field('isOther', pa.bool_()),
+                pa.field('officerTitle', pa.string()),
+                pa.field('security_title', pa.string()),
+                pa.field('transaction_date', pa.string()),
+                pa.field('form_type', pa.int64()),
+                pa.field('code', pa.string()),
+                pa.field('equity_swap', pa.float64()),
+                pa.field('shares', pa.float64()),
+                pa.field('acquired_disposed_code', pa.string()),
+                pa.field('shares_owned_following_transaction', pa.float64()),
+                pa.field('direct_or_indirect_ownership', pa.string()),
+                pa.field('form4_link', pa.string()),
+                pa.field('hash', pa.string()),
+            ])
+
+            # Read the existing data from the Parquet file
+            existing_df = pd.read_parquet(
+                path=self.parquet_path, engine='pyarrow', schema=pa_schema, filters=[('parent_cik', '=', int(self.cik))])
+            print(f"Existing df: {len(existing_df)}")
+            df = df[~df['hash'].isin(existing_df['hash'])].dropna()
+        else:
+            print(f"Existing df: 0")
+
+        # Write the DataFrame to a directory-based Parquet file
+        if len(df) > 0:
+            print(f"New df: {len(df)}")
+            # Remove the original index column from the DataFrame
+            df = df.reset_index(drop=True)
+            df.to_parquet(self.parquet_path, partition_cols=[
+                          'parent_cik'], engine='pyarrow')
+            self.save_scraped_operation_ids()
+
+            # Read the previous DataFrame from a Parquet file only rows with a matching parent CIK
+            prev_df = pd.read_parquet(self.parquet_path, filters=[
+                                      ('parent_cik', '=', int(self.cik))])
+
+            # Convert the 'transaction_date' column to a datetime format
+            prev_df['transaction_date'] = pd.to_datetime(
+                prev_df['transaction_date'], format='%Y-%m-%d')
+
+            # Filter the DataFrame to keep only rows within the specified date range
+            mask = (prev_df['transaction_date'] >= self.start_date) & (
+                prev_df['transaction_date'] <= self.end_date)
+            prev_df = prev_df.loc[mask]
+
+            # Reorder the columns of the previous DataFrame to match the current DataFrame
+            prev_df = prev_df[df.columns]
+
+            # Concatenate the current DataFrame with the filtered previous DataFrame
+            df = pd.concat([df, prev_df], ignore_index=True)
+
+            # Convert the resulting DataFrame to a list of dictionaries
+            self.data = df.to_dict(orient='records')
+
+        else:
+            print(f"New df: {len(df)}")

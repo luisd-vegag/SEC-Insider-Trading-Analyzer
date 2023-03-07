@@ -18,7 +18,8 @@ from ClassForm4 import Form4
 class TradingData:
     def __init__(self, cik: str, start_date: str = None, end_date: str = None) -> None:
         self.cik = cik
-        self.data = Form4(cik, start_date, end_date).data
+        self.form4 = Form4(cik, start_date, end_date)
+        self.data = self.form4.data
         if len(self.data) > 0:
             self.parquet_path = 'trading-data'
             self.add_stock_data()
@@ -214,8 +215,8 @@ class TradingData:
                 prev_df['transaction_date'], format='%Y-%m-%d')
 
             # Filter the DataFrame to keep only rows within the specified date range
-            mask = (prev_df['transaction_date'] >= self.start_date) & (
-                prev_df['transaction_date'] <= self.end_date)
+            mask = (prev_df['transaction_date'] >= self.form4.start_date) & (
+                prev_df['transaction_date'] <= self.form4.end_date)
             prev_df = prev_df.loc[mask]
 
             # Reorder the columns of the previous DataFrame to match the current DataFrame
