@@ -6,8 +6,6 @@ import requests
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
-import plotly.subplots as sp
-import plotly.express as px
 from typing import List
 from bs4 import BeautifulSoup
 import hashlib
@@ -472,41 +470,35 @@ class Form4:
             # Read the existing data from the Parquet file
             existing_df = pd.read_parquet(
                 path=self.parquet_path, engine='pyarrow', schema=pa_schema, filters=[('parent_cik', '=', int(self.cik))])
-            print(f"Existing df: {len(existing_df)}")
-            df = df[~df['hash'].isin(existing_df['hash'])].dropna()
-        else:
-            print(f"Existing df: 0")
-
-        # Write the DataFrame to a directory-based Parquet file
-        if len(df) > 0:
-            print(f"New df: {len(df)}")
-            # Remove the original index column from the DataFrame
-            df = df.reset_index(drop=True)
-            df.to_parquet(self.parquet_path, partition_cols=[
-                          'parent_cik'], engine='pyarrow')
-            self.save_scraped_operation_ids()
-
-            # Read the previous DataFrame from a Parquet file only rows with a matching parent CIK
-            prev_df = pd.read_parquet(self.parquet_path, filters=[
-                                      ('parent_cik', '=', int(self.cik))])
 
             # Convert the 'transaction_date' column to a datetime format
-            prev_df['transaction_date'] = pd.to_datetime(
-                prev_df['transaction_date'], format='%Y-%m-%d')
+            existing_df['transaction_date'] = pd.to_datetime(
+                existing_df['transaction_date'], format='%Y-%m-%d')
 
             # Filter the DataFrame to keep only rows within the specified date range
-            mask = (prev_df['transaction_date'] >= self.start_date) & (
-                prev_df['transaction_date'] <= self.end_date)
-            prev_df = prev_df.loc[mask]
-
-            # Reorder the columns of the previous DataFrame to match the current DataFrame
-            prev_df = prev_df[df.columns]
-
-            # Concatenate the current DataFrame with the filtered previous DataFrame
-            df = pd.concat([df, prev_df], ignore_index=True)
-
-            # Convert the resulting DataFrame to a list of dictionaries
-            self.data = df.to_dict(orient='records')
-
+            mask = (existing_df['transaction_date'] >= self.start_date) & (
+                existing_df['transaction_date'] <= self.end_date)
+            existing_df = existing_df.loc[mask]
+            print(f"Existing df: {len(existing_df)}")
         else:
+            print(f"No Existing df")
+
+        if len(df) > 0:
+            # Write the DataFrame to a directory-based Parquet file
+            if ('existing_df' in locals()):
+                # Reorder the columns of the previous DataFrame to match the current DataFrame
+                existing_df = existing_df[df.columns]
+                df = df[~df['hash'].isin(existing_df['hash'])].dropna()
             print(f"New df: {len(df)}")
+            if len(df) > 0:
+                # Remove the original index column from the DataFrame
+                df = df.reset_index(drop=True)
+                df.to_parquet(self.parquet_path, partition_cols=[
+                    'parent_cik'], engine='pyarrow')
+
+        if ('existing_df' in locals()):
+            # Concatenate the current DataFrame with the filtered previous DataFrame
+            df = pd.concat([df, existing_df], ignore_index=True)
+        self.save_scraped_operation_ids()
+        # Convert the resulting DataFrame to a list of dictionaries
+        self.data = df.to_dict(orient='records')

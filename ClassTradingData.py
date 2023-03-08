@@ -1,15 +1,9 @@
 import os
-import time
-import datetime
-import statistics
-import requests
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
 import plotly.subplots as sp
-import plotly.express as px
 from typing import List
-from bs4 import BeautifulSoup
 import hashlib
 import pyarrow as pa
 from ClassForm4 import Form4
@@ -20,8 +14,9 @@ class TradingData:
         self.cik = cik
         self.form4 = Form4(cik, start_date, end_date)
         self.data = self.form4.data
+
         if len(self.data) > 0:
-            self.parquet_path = 'trading-data'
+            self.parquet_path = 'system/trading-data'
             self.add_stock_data()
             self.record_data()
         else:
@@ -33,6 +28,7 @@ class TradingData:
         """
 
         df = pd.DataFrame(self.data)
+
         df = df[df['ticker'].notnull()]
         df['transaction_date'] = pd.to_datetime(
             df['transaction_date'], format='%Y-%m-%d')
@@ -55,7 +51,9 @@ class TradingData:
             if not ticker_history_n.empty:
                 good_ticker.append(ticker)
                 ticker_history_n['stock_ticker'] = ticker
-                ticker_history_pd = ticker_history_pd.append(ticker_history_n)
+                ticker_history_pd = pd.concat(
+                    [ticker_history_pd, ticker_history_n], ignore_index=True)
+
             else:
                 bad_ticker.append(ticker)
         ticker_history_pd = ticker_history_pd.reset_index()
@@ -81,7 +79,7 @@ class TradingData:
 
         df['shares_value_usd'] = df['average_price'].astype(float) * \
             df['shares'].astype(float)
-        for col_name, col_values in df.iteritems():
+        for col_name, col_values in df.items():
             if col_values.dtype == float:
                 df[col_name] = col_values.apply(lambda x: round(x, 4))
 
@@ -106,38 +104,38 @@ class TradingData:
         df = pd.DataFrame(self.data)
         # Define a dictionary with the data types for each column
         schema = {
-            'cik': 'int',
-            'parent_cik': 'int',
+            'cik': 'Int64',
+            'parent_cik': 'Int64',
             'name': 'string',
             'ticker': 'string',
             'rptOwnerName': 'string',
             'rptOwnerCik': 'string',
-            'isDirector': 'bool',
-            'isOfficer': 'bool',
-            'isTenPercentOwner': 'bool',
-            'isOther': 'bool',
+            'isDirector': 'boolean',
+            'isOfficer': 'boolean',
+            'isTenPercentOwner': 'boolean',
+            'isOther': 'boolean',
             'officerTitle': 'string',
             'security_title': 'string',
-            'transaction_date': 'string',
-            'form_type': 'int',
+            'transaction_date': 'datetime64[ns]',
+            'form_type': 'string',
             'code': 'string',
-            'equity_swap': 'float',
-            'shares': 'float',
+            'equity_swap': 'float64',
+            'shares': 'float64',
             'acquired_disposed_code': 'string',
-            'shares_owned_following_transaction': 'float',
+            'shares_owned_following_transaction': 'float64',
             'direct_or_indirect_ownership': 'string',
             'form4_link': 'string',
-            'open': 'float',
-            'high': 'float',
-            'low': 'float',
-            'close': 'float',
-            'adj_close': 'float',
-            'volume': 'float',
-            'daily_return': 'float',
-            'percent_change': 'float',
-            'range': 'float',
-            'average_price': 'float',
-            'shares_value_usd': 'float',
+            'open': 'float64',
+            'high': 'float64',
+            'low': 'float64',
+            'close': 'float64',
+            'adj_close': 'float64',
+            'volume': 'float64',
+            'daily_return': 'float64',
+            'percent_change': 'float64',
+            'range': 'float64',
+            'average_price': 'float64',
+            'shares_value_usd': 'float64'
         }
 
         # Loop over the columns in the dictionary and convert their data types
