@@ -25,11 +25,11 @@ To use the Form4 Scraper, follow these steps:
 
 3. Build the Docker image by running the following command:
 
-    `docker build -t form4-app .`
+    `docker build -t sec-app .`
 
 4. Once the image is built, start a Docker container and access the bash terminal inside the container with the following command:
 
-    `docker run -it form4-app /bin/bash`
+    `docker run -it -v $(pwd):/app sec-app`
 
 5. You are now inside the Docker container and can interact with the Form4 class. You can run your Python script or open the Python REPL to experiment with the class methods.
 

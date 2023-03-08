@@ -4,7 +4,6 @@ import yfinance as yf
 import plotly.graph_objects as go
 import plotly.subplots as sp
 from typing import List
-import hashlib
 import pyarrow as pa
 from ClassForm4 import Form4
 
@@ -14,6 +13,8 @@ class TradingData:
         self.cik = cik
         self.form4 = Form4(cik, start_date, end_date)
         self.data = self.form4.data
+        pd.set_option('display.max_columns', None)
+        pd.set_option('display.max_rows', None)
 
         if len(self.data) > 0:
             self.parquet_path = 'system/trading-data'
@@ -21,6 +22,43 @@ class TradingData:
             self.record_data()
         else:
             print(f"No data to save for {self.cik}")
+
+    @ staticmethod
+    def add_close_market_days(stock_prices_df):
+        # loop over each stock ticker in the DataFrame
+        filled_dfs = []
+        fill_cols = ['open', 'high', 'low', 'close', 'adj_close']
+        for ticker in stock_prices_df['stock_ticker'].unique():
+            ticker_df = stock_prices_df[stock_prices_df['stock_ticker'] == ticker].copy(
+            )
+
+            # create a DataFrame with all dates between the first and last dates in the DataFrame
+            date_range = pd.date_range(
+                ticker_df['date'].iloc[0], ticker_df['date'].iloc[-1], freq='D')
+            all_dates_df = pd.DataFrame({'date': date_range})
+
+            # merge the all_dates_df with the ticker_df to fill in missing dates
+            merged_df = pd.merge(all_dates_df, ticker_df,
+                                 on='date', how='left')
+
+            # fill in missing values for specified columns with the previous or next day's close price
+            # !! NOT WORKING AS INTENDENT. THE VALUES ARE NOT USING THE CLOSE PRICE
+            merged_df[fill_cols] = merged_df.groupby('stock_ticker')[fill_cols].fillna(
+                method='ffill').fillna(method='bfill')
+
+            merged_df['volume'] = 0
+            merged_df['stock_ticker'] = ticker
+            # append the filled DataFrame for this ticker to the list of filled DataFrames
+            filled_dfs.append(merged_df)
+
+        # concatenate the filled DataFrames for each ticker
+        filled_stock_prices_df = pd.concat(filled_dfs)
+
+        # sort the final DataFrame by stock ticker and date
+        filled_stock_prices_df = filled_stock_prices_df.sort_values(
+            ['stock_ticker', 'date'])
+
+        return filled_stock_prices_df
 
     def add_stock_data(self) -> None:
         """
@@ -39,68 +77,62 @@ class TradingData:
             min_max_dates['min_date'], min_max_dates['max_date'])))
         # create a list of unique tickers in the dataframe
         tickers = df['ticker'].unique()
-        ticker_history_pd = pd.DataFrame(
-            columns=['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume', 'stock_ticker'])
+        stock_prices_df = pd.DataFrame(
+            columns=['Date', 'Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume', 'stock_ticker'])
         good_ticker = []
         bad_ticker = []
         # loop over each ticker to get the stock prices data from yfinance and append it to the stock prices dataframe
         for ticker in tickers:
             min_date, max_date = stock_date_dict[ticker]
+            # Holidays and weekends missing
             ticker_history_n = yf.download(
                 ticker, start=min_date, end=max_date)
+
             if not ticker_history_n.empty:
                 good_ticker.append(ticker)
                 ticker_history_n['stock_ticker'] = ticker
-                ticker_history_pd = pd.concat(
-                    [ticker_history_pd, ticker_history_n], ignore_index=True)
-
+                ticker_history_n.reset_index(inplace=True)
+                stock_prices_df = pd.concat(
+                    [stock_prices_df, ticker_history_n], ignore_index=True)
             else:
                 bad_ticker.append(ticker)
-        ticker_history_pd = ticker_history_pd.reset_index()
-        ticker_history_pd = ticker_history_pd.rename(
-            columns={c: c.replace(' ', '_').lower() for c in ticker_history_pd.columns})
-        stock_prices_df = pd.DataFrame(ticker_history_pd)
-        stock_prices_df['date'] = pd.to_datetime(
-            stock_prices_df['index'], format='%Y-%m-%d')
 
-        stock_prices_df = stock_prices_df.drop(['index'], axis=1)
+        if not stock_prices_df.empty:
+            stock_prices_df = stock_prices_df.rename(
+                columns={c: c.replace(' ', '_').lower() for c in stock_prices_df.columns})
 
-        df = pd.merge(df, stock_prices_df, how='left', left_on=[
-            'ticker', 'transaction_date'], right_on=['stock_ticker', 'date'])
+            stock_prices_df['date'] = pd.to_datetime(
+                stock_prices_df['date'], format='%Y-%m-%d')
 
-        df = df.drop(['date', 'stock_ticker'], axis=1)
+            stock_prices_df = TradingData.add_close_market_days(
+                stock_prices_df)
 
-        df['daily_return'] = (df['close'].astype(
-            float) - df['open'].astype(float)) / df['open'].astype(float)
-        df['percent_change'] = df['daily_return'].astype(float) * 100
-        df['range'] = df['high'].astype(float) - df['low'].astype(float)
-        df['average_price'] = (df['high'].astype(
-            float) + df['low'].astype(float)) / 2
+            df['transaction_date'] = pd.to_datetime(
+                df['transaction_date'], format='%Y-%m-%d')
 
-        df['shares_value_usd'] = df['average_price'].astype(float) * \
-            df['shares'].astype(float)
-        for col_name, col_values in df.items():
-            if col_values.dtype == float:
-                df[col_name] = col_values.apply(lambda x: round(x, 4))
+            df = pd.merge(df, stock_prices_df, how='left', left_on=[
+                'ticker', 'transaction_date'], right_on=['stock_ticker', 'date'])
 
-        self.data = df.to_dict(orient='records')
+            df = df.drop(['date', 'stock_ticker'], axis=1)
 
-    @ staticmethod
-    def generate_hash(pd_df):
+            df['daily_return'] = (df['close'].astype(
+                float) - df['open'].astype(float)) / df['open'].astype(float)
+            df['percent_change'] = df['daily_return'].astype(float) * 100
+            df['range'] = df['high'].astype(
+                float) - df['low'].astype(float)
+            df['average_price'] = (df['high'].astype(
+                float) + df['low'].astype(float)) / 2
 
-        # Remove the original index column from the DataFrame
-        pd_df = pd_df.reset_index(drop=True)
+            df['shares_value_usd'] = df['average_price'].astype(float) * \
+                df['shares'].astype(float)
+            for col_name, col_values in df.items():
+                if col_values.dtype == float:
+                    df[col_name] = col_values.apply(lambda x: round(x, 4))
 
-        # Sort the columns in the DataFrame before computing the hash
-        pd_df = pd_df.sort_index(axis=1)
-
-        # Generate a new column with a concatenated string and a SHA-2 hash for each row
-        pd_df['hash'] = pd_df.apply(lambda row: hashlib.sha256(
-            str(row.values).encode('utf-8')).hexdigest(), axis=1)
-
-        return pd_df
+            self.data = df.to_dict(orient='records')
 
     def record_data(self):
+
         df = pd.DataFrame(self.data)
         # Define a dictionary with the data types for each column
         schema = {
@@ -135,7 +167,8 @@ class TradingData:
             'percent_change': 'float64',
             'range': 'float64',
             'average_price': 'float64',
-            'shares_value_usd': 'float64'
+            'shares_value_usd': 'float64',
+            'hash': 'string'
         }
 
         # Loop over the columns in the dictionary and convert their data types
@@ -143,37 +176,11 @@ class TradingData:
             if col in df.columns:
                 df[col] = df[col].astype(dtype)
 
-        # Call the generate_hash method on the class itself, not on an instance of the class
-        df = TradingData.generate_hash(df)
-        # Select only the unique rows based on the 'hash' column
-        df = df.drop_duplicates(subset=['hash'])
-
-        print(f"Incoming df: {len(df)}")
         # Check if the Parquet file already exists
-        if os.path.isdir(self.parquet_path):
-
+        if os.path.isdir(self.parquet_path + '/parent_cik=' + self.cik):
             pa_schema = pa.schema([
-                pa.field('cik', pa.int64()),
                 pa.field('parent_cik', pa.int64()),
-                pa.field('name', pa.string()),
-                pa.field('ticker', pa.string()),
-                pa.field('rptOwnerName', pa.string()),
-                pa.field('rptOwnerCik', pa.string()),
-                pa.field('isDirector', pa.bool_()),
-                pa.field('isOfficer', pa.bool_()),
-                pa.field('isTenPercentOwner', pa.bool_()),
-                pa.field('isOther', pa.bool_()),
-                pa.field('officerTitle', pa.string()),
-                pa.field('security_title', pa.string()),
-                pa.field('transaction_date', pa.string()),
-                pa.field('form_type', pa.int64()),
-                pa.field('code', pa.string()),
-                pa.field('equity_swap', pa.float64()),
-                pa.field('shares', pa.float64()),
-                pa.field('acquired_disposed_code', pa.string()),
-                pa.field('shares_owned_following_transaction', pa.float64()),
-                pa.field('direct_or_indirect_ownership', pa.string()),
-                pa.field('form4_link', pa.string()),
+                pa.field('hash', pa.string()),
                 pa.field('open', pa.float64()),
                 pa.field('high', pa.float64()),
                 pa.field('low', pa.float64()),
@@ -185,7 +192,6 @@ class TradingData:
                 pa.field('range', pa.float64()),
                 pa.field('average_price', pa.float64()),
                 pa.field('shares_value_usd', pa.float64()),
-                pa.field('hash', pa.string()),
             ])
 
             # Read the existing data from the Parquet file
@@ -194,40 +200,23 @@ class TradingData:
             print(f"Existing df: {len(existing_df)}")
             df = df[~df['hash'].isin(existing_df['hash'])].dropna()
 
-        # Write the DataFrame to a directory-based Parquet file
-        if len(df) > 0:
-            print(f"New df: {len(df)}")
-            # Remove the original index column from the DataFrame
-            df = df.reset_index(drop=True)
-            df.to_parquet(self.parquet_path, partition_cols=[
-                          'parent_cik'], engine='pyarrow')
+        df = df[['parent_cik',
+                'hash',
+                 'open',
+                 'high',
+                 'low',
+                 'close',
+                 'adj_close',
+                 'volume',
+                 'daily_return',
+                 'percent_change',
+                 'range',
+                 'average_price',
+                 'shares_value_usd'
+                 ]]
 
-            # Read the previous DataFrame from a Parquet file
-            prev_df = pd.read_parquet(self.parquet_path)
-
-            # Filter the DataFrame to keep only rows with a matching parent CIK
-            prev_df = prev_df[prev_df['parent_cik'] == self.cik]
-
-            # Convert the 'transaction_date' column to a datetime format
-            prev_df['transaction_date'] = pd.to_datetime(
-                prev_df['transaction_date'], format='%Y-%m-%d')
-
-            # Filter the DataFrame to keep only rows within the specified date range
-            mask = (prev_df['transaction_date'] >= self.form4.start_date) & (
-                prev_df['transaction_date'] <= self.form4.end_date)
-            prev_df = prev_df.loc[mask]
-
-            # Reorder the columns of the previous DataFrame to match the current DataFrame
-            prev_df = prev_df[df.columns]
-
-            # Concatenate the current DataFrame with the filtered previous DataFrame
-            df = pd.concat([df, prev_df], ignore_index=True)
-
-            # Convert the resulting DataFrame to a list of dictionaries
-            self.data = df.to_dict(orient='records')
-
-        else:
-            print(f"New df: {len(df)}")
+        df.to_parquet(self.parquet_path, partition_cols=[
+            'parent_cik'], engine='pyarrow')
 
     def inside_traiding_impact_plot(self) -> None:
         """

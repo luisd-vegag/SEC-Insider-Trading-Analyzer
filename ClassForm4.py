@@ -366,27 +366,6 @@ class Form4:
                 "form4_link": form4_link
             })
 
-    def save_to_csv(self, path: str) -> None:
-        """
-        Saves the Form 4 data to a CSV file.
-
-        Parameters:
-        path (str): The path and filename to save the CSV file to.
-        """
-        if (len(self.data) > 0):
-            directory_index = path.rfind("/")
-            if directory_index != -1:
-                directory = path[:directory_index]
-                # Check if directory exists and create it if it doesn't
-                if not os.path.exists(directory):
-                    os.makedirs(directory)
-
-            form4_df = pd.DataFrame(self.data)
-            form4_df.to_csv(path, sep='|', index=False)
-            print(f"CIK: '{self.cik}'| Saved Form 4 data.")
-        else:
-            print(f"CIK: '{self.cik}'| There is not Form 4 data.")
-
     @ staticmethod
     def generate_hash(pd_df):
 
@@ -481,6 +460,7 @@ class Form4:
             existing_df = existing_df.loc[mask]
             print(f"Existing df: {len(existing_df)}")
         else:
+            a = 0
             print(f"No Existing df")
 
         if len(df) > 0:
@@ -502,3 +482,24 @@ class Form4:
         self.save_scraped_operation_ids()
         # Convert the resulting DataFrame to a list of dictionaries
         self.data = df.to_dict(orient='records')
+
+    def save_to_csv(self, path: str = 'tmp/saved_csv') -> None:
+        """
+        Saves the Form 4 data to a CSV file.
+
+        Parameters:
+        path (str): The path and filename to save the CSV file to.
+        """
+        if (len(self.data) > 0):
+            directory_index = path.rfind("/")
+            if directory_index != -1:
+                directory = path[:directory_index]
+                # Check if directory exists and create it if it doesn't
+                if not os.path.exists(directory):
+                    os.makedirs(directory)
+
+            form4_df = pd.DataFrame(self.data)
+            form4_df.to_csv(path, sep='|', index=False)
+            print(f"CIK: '{self.cik}'| Saved Form 4 data.")
+        else:
+            print(f"CIK: '{self.cik}'| There is not Form 4 data.")
