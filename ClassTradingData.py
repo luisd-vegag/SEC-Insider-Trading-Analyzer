@@ -14,13 +14,18 @@ class TradingData:
         self.cik = cik
         self.form4 = Form4(cik, start_date, end_date, days_range)
         self.data = self.form4.data
+        self.start_date = self.form4.start_date
+        self.end_date = self.form4.end_date
         pd.set_option('display.max_columns', None)
         pd.set_option('display.max_rows', None)
 
         if len(self.data) > 0:
             self.parquet_path = 'system/trading-data'
             self.add_stock_data()
-            self.record_data()
+            try:
+                self.record_data()
+            except:
+                print(f"Unable to permorm Data Sync for {self.cik}")
         else:
             print(f"No data to save for {self.cik}")
 
@@ -219,7 +224,7 @@ class TradingData:
         df.to_parquet(self.parquet_path, partition_cols=[
             'parent_cik'], engine='pyarrow')
 
-    def acquired_disposed_by_insider(self):
+    def stacked_bar_acquired_disposed_by_insider(self):
         '''
         This will create a stacked bar chart showing the total number of shares acquired (A) and disposed (D) by each insider.
         '''
@@ -236,7 +241,7 @@ class TradingData:
 
         # Create bar chart
         fig = px.bar(pivot, x=pivot.index, y=[
-            'A', 'D'], barmode='stack', title=f'{company_name} ({self.form4.start_date} to {self.form4.end_date}) - Total Shares Acquired/Disposed by Insider')
+            'A', 'D'], barmode='stack', title=f'{company_name} ({self.start_date} to {self.end_date}) - Total Shares Acquired/Disposed by Insider')
 
         fig.show()
 
@@ -258,12 +263,12 @@ class TradingData:
 
         # Create stacked bar chart
         fig = px.bar(pivot, x=pivot.index, y=column_names, barmode='stack',
-                     title=f'{company_name} ({self.form4.start_date} to {self.form4.end_date}) - Insider Ownership', color_discrete_sequence=['#636EFA', '#EF553B'])
+                     title=f'{company_name} ({self.start_date} to {self.end_date}) - Insider Ownership', color_discrete_sequence=['#636EFA', '#EF553B'])
 
         # Display chart
         fig.show()
 
-    def inside_trading_impact_plot(self):
+    def plot_inside_trading_impact(self):
         """
         Generates a plot of the inside trading impact over time.
         """

@@ -53,53 +53,6 @@ class Form4:
         self.get_operation_ids()
         self.scrape_form4()
 
-    @ staticmethod
-    def calculate_dates(start_date: str = None, end_date: str = None, days_range: int = 0):
-        """
-        Calculates the start and end dates based on the input parameters.
-
-        Parameters:
-        start_date (str): The start date in the format 'yyyy-MM-dd'. Defaults to None.
-        end_date (str): The end date in the format 'yyyy-MM-dd'. Defaults to None.
-        days_range (int): The number of days to subtract from the end date to get the start date.
-
-        Returns:
-        A tuple containing the start and end dates in the format 'yyyy-MM-dd'.
-        """
-        if start_date is not None and end_date is None and days_range > 0:
-            # If start date is specified but end date is not, and days range is specified,
-            # calculate the end date by adding the days range to the start date
-            start_date = datetime.datetime.strptime(start_date, '%Y-%m-%d')
-            end_date = (
-                start_date + datetime.timedelta(days=days_range)).strftime('%Y-%m-%d')
-        elif start_date is None and end_date is None and days_range > 0:
-            # If start date and end date are not specified, but days range is specified,
-            # calculate the end date as today's date and the start date by subtracting the days range from the end date
-            end_date = datetime.datetime.today().strftime('%Y-%m-%d')
-            start_date = (datetime.datetime.today(
-            ) - datetime.timedelta(days=days_range)).strftime('%Y-%m-%d')
-
-        elif start_date is None and end_date is None and days_range > 0:
-            # If start date and end date are not specified, but days range is specified,
-            # calculate the end date as today's date and the start date by subtracting the days range from the end date
-            end_date = datetime.datetime.today().strftime('%Y-%m-%d')
-            start_date = (datetime.datetime.today(
-            ) - datetime.timedelta(days=days_range)).strftime('%Y-%m-%d')
-        elif start_date is None and end_date is not None and days_range == 0:
-            # If start date is not specified, end date is specified, and days range is 0,
-            # set the start date to '1990-01-01'
-            start_date = '1990-01-01'
-        elif start_date is not None and end_date is None and days_range == 0:
-            # If end date is not specified, start date is specified, and days range is 0,
-            # set the end date to the current date
-            end_date = datetime.datetime.today().strftime('%Y-%m-%d')
-        else:
-            # If none of the parameters are specified, do nothing
-            print('THIS COULD TAKE A WHILE SO GRAB A SHACK AND BUCKLE UP!')
-            pass
-
-        return start_date, end_date
-
     def get_operation_ids(self) -> None:
         """
         Gets the operation IDs for the search results and saves them to the Form4 instance.
@@ -295,7 +248,10 @@ class Form4:
                         f"CIK: '{self.cik}'| Decrease delay by 1 to {delay} seconds.")
 
                 time.sleep(delay)
-        self.sync_system_data()
+        try:
+            self.sync_system_data()
+        except:
+            print(f"Unable to permorm Data Sync for {self.cik}")
 
     def get_form4_data(self, form4_link: str) -> List[dict]:
         """
@@ -415,21 +371,6 @@ class Form4:
                 "form4_link": form4_link
             })
 
-    @ staticmethod
-    def generate_hash(pd_df):
-
-        # Remove the original index column from the DataFrame
-        pd_df = pd_df.reset_index(drop=True)
-
-        # Sort the columns in the DataFrame before computing the hash
-        pd_df = pd_df.sort_index(axis=1)
-
-        # Generate a new column with a concatenated string and a SHA-2 hash for each row
-        pd_df['hash'] = pd_df.apply(lambda row: hashlib.sha256(
-            str(row.values).encode('utf-8')).hexdigest(), axis=1)
-
-        return pd_df
-
     def sync_system_data(self):
         df = pd.DataFrame(self.data)
         # Define a dictionary with the data types for each column
@@ -460,6 +401,7 @@ class Form4:
         # Loop over the columns in the dictionary and convert their data types
         for col, dtype in schema.items():
             if col in df.columns:
+
                 df[col] = df[col].astype(dtype)
 
         # Call the generate_hash method on the class itself, not on an instance of the class
@@ -532,7 +474,7 @@ class Form4:
         # Convert the resulting DataFrame to a list of dictionaries
         self.data = df.to_dict(orient='records')
 
-    def save_to_csv(self, path: str = 'tmp/saved_csv') -> None:
+    def save_to_csv(self, path: str = 'data/saved_form4_date.csv') -> None:
         """
         Saves the Form 4 data to a CSV file.
 
@@ -552,3 +494,65 @@ class Form4:
             print(f"CIK: '{self.cik}'| Saved Form 4 data.")
         else:
             print(f"CIK: '{self.cik}'| There is not Form 4 data.")
+
+    @ staticmethod
+    def generate_hash(pd_df):
+
+        # Remove the original index column from the DataFrame
+        pd_df = pd_df.reset_index(drop=True)
+
+        # Sort the columns in the DataFrame before computing the hash
+        pd_df = pd_df.sort_index(axis=1)
+
+        # Generate a new column with a concatenated string and a SHA-2 hash for each row
+        pd_df['hash'] = pd_df.apply(lambda row: hashlib.sha256(
+            str(row.values).encode('utf-8')).hexdigest(), axis=1)
+
+        return pd_df
+
+    @ staticmethod
+    def calculate_dates(start_date: str = None, end_date: str = None, days_range: int = 0):
+        """
+        Calculates the start and end dates based on the input parameters.
+
+        Parameters:
+        start_date (str): The start date in the format 'yyyy-MM-dd'. Defaults to None.
+        end_date (str): The end date in the format 'yyyy-MM-dd'. Defaults to None.
+        days_range (int): The number of days to subtract from the end date to get the start date.
+
+        Returns:
+        A tuple containing the start and end dates in the format 'yyyy-MM-dd'.
+        """
+        if start_date is not None and end_date is None and days_range > 0:
+            # If start date is specified but end date is not, and days range is specified,
+            # calculate the end date by adding the days range to the start date
+            start_date = datetime.datetime.strptime(start_date, '%Y-%m-%d')
+            end_date = (
+                start_date + datetime.timedelta(days=days_range)).strftime('%Y-%m-%d')
+        elif start_date is None and end_date is None and days_range > 0:
+            # If start date and end date are not specified, but days range is specified,
+            # calculate the end date as today's date and the start date by subtracting the days range from the end date
+            end_date = datetime.datetime.today().strftime('%Y-%m-%d')
+            start_date = (datetime.datetime.today(
+            ) - datetime.timedelta(days=days_range)).strftime('%Y-%m-%d')
+
+        elif start_date is None and end_date is None and days_range > 0:
+            # If start date and end date are not specified, but days range is specified,
+            # calculate the end date as today's date and the start date by subtracting the days range from the end date
+            end_date = datetime.datetime.today().strftime('%Y-%m-%d')
+            start_date = (datetime.datetime.today(
+            ) - datetime.timedelta(days=days_range)).strftime('%Y-%m-%d')
+        elif start_date is None and end_date is not None and days_range == 0:
+            # If start date is not specified, end date is specified, and days range is 0,
+            # set the start date to '1990-01-01'
+            start_date = '1990-01-01'
+        elif start_date is not None and end_date is None and days_range == 0:
+            # If end date is not specified, start date is specified, and days range is 0,
+            # set the end date to the current date
+            end_date = datetime.datetime.today().strftime('%Y-%m-%d')
+        else:
+            # If none of the parameters are specified, do nothing
+            print('THIS COULD TAKE A WHILE SO GRAB A SHACK AND BUCKLE UP!')
+            pass
+
+        return start_date, end_date
