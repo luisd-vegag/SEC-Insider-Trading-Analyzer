@@ -6,12 +6,13 @@ import plotly.subplots as sp
 from typing import List
 import pyarrow as pa
 from ClassForm4 import Form4
+import plotly.express as px
 
 
 class TradingData:
-    def __init__(self, cik: str, start_date: str = None, end_date: str = None) -> None:
+    def __init__(self, cik: str, start_date: str = None, end_date: str = None, days_range: int = 0) -> None:
         self.cik = cik
-        self.form4 = Form4(cik, start_date, end_date)
+        self.form4 = Form4(cik, start_date, end_date, days_range)
         self.data = self.form4.data
         pd.set_option('display.max_columns', None)
         pd.set_option('display.max_rows', None)
@@ -218,43 +219,103 @@ class TradingData:
         df.to_parquet(self.parquet_path, partition_cols=[
             'parent_cik'], engine='pyarrow')
 
-    def inside_traiding_impact_plot(self) -> None:
+    def acquired_disposed_by_insider(self):
+        '''
+        This will create a stacked bar chart showing the total number of shares acquired (A) and disposed (D) by each insider.
+        '''
+        # Convert list of dictionaries to Pandas DataFrame
+        df = pd.DataFrame(self.data)
+        company_name = str(df['name'][0]).upper()
+        # Group by insider and sum shares acquired/disposed
+        grouped = df.groupby(['rptOwnerName', 'acquired_disposed_code'],
+                             as_index=False).agg({'shares': 'sum'})
+
+        # Pivot table to create bar chart
+        pivot = pd.pivot_table(grouped, values='shares',
+                               index='rptOwnerName', columns='acquired_disposed_code')
+
+        # Create bar chart
+        fig = px.bar(pivot, x=pivot.index, y=[
+            'A', 'D'], barmode='stack', title=f'{company_name} ({self.form4.start_date} to {self.form4.end_date}) - Total Shares Acquired/Disposed by Insider')
+
+        fig.show()
+
+    def stacked_bar_insider_ownership(self):
+
+        # Convert list of dictionaries to Pandas DataFrame
+        df = pd.DataFrame(self.data)
+        company_name = str(df['name'][0]).upper()
+        # Group by insider and sum shares owned following transaction
+        grouped = df.groupby(['rptOwnerName', 'direct_or_indirect_ownership'], as_index=True).agg(
+            {'shares_owned_following_transaction': 'sum'})
+
+        # Pivot table to create bar chart
+        pivot = pd.pivot_table(grouped, values='shares_owned_following_transaction',
+                               index='rptOwnerName', columns='direct_or_indirect_ownership')
+
+        # Get list of column names for bar chart
+        column_names = pivot.columns.tolist()
+
+        # Create stacked bar chart
+        fig = px.bar(pivot, x=pivot.index, y=column_names, barmode='stack',
+                     title=f'{company_name} ({self.form4.start_date} to {self.form4.end_date}) - Insider Ownership', color_discrete_sequence=['#636EFA', '#EF553B'])
+
+        # Display chart
+        fig.show()
+
+    def inside_trading_impact_plot(self):
         """
         Generates a plot of the inside trading impact over time.
         """
+        # Convert input data to Pandas DataFrame
         df = pd.DataFrame(self.data)
-        # Calculate the total inside trading volume for each day
-        df = df.groupby("transaction_date").agg({"shares_value_usd": "sum"}).rename(
+        company_name = str(df['name'][0]).upper()
+        df['transaction_date'] = pd.to_datetime(
+            df['transaction_date'], format='%Y-%m-%d')
+
+        # Group by transaction date and sum the inside trading volume for each day and acquired/disposed code
+        trading_volume_df = df.groupby(["transaction_date", "acquired_disposed_code"], as_index=False).agg({"shares_value_usd": "sum"}).rename(
             columns={"shares_value_usd": "inside_trading_volume"})
 
-        df = df.sort_values(by='transaction_date', ascending=True)
+        # Create separate DataFrame for stock closing price
+        closing_price_df = df[["transaction_date", "close"]].dropna()
+
+        # Sort the DataFrames by transaction date in ascending order
+        trading_volume_df = trading_volume_df.sort_values(
+            by='transaction_date', ascending=True)
+        closing_price_df = closing_price_df.sort_values(
+            by='transaction_date', ascending=True)
 
         # Create figure with secondary y-axis
-        fig = sp.make_subplots(specs=[[{"secondary_y": True}]])
-
-        # Add traces
-        fig.add_trace(
-            go.Scatter(x=df["transaction_date"],
-                       y=df["inside_trading_volume"], name="Inside Trading Volume"),
-            secondary_y=False,
-        )
-
-        fig.add_trace(
-            go.Scatter(x=df["transaction_date"],
-                       y=df["close"], name="Stock Closing Price"),
-            secondary_y=True,
-        )
+        fig = sp.make_subplots(rows=1, cols=1, specs=[[{"secondary_y": True}]])
 
         # Add figure title
         fig.update_layout(
-            title_text=f"Inside Trading Volume and Stock Closing Price Over Time"
+            title_text=f'{company_name} - Inside Trading Volume (Acquired | Disposed) and Stock Closing Price Over Time'
+        )
+
+        # Add traces to the figure
+        for code in ['A', 'D']:
+            fig.add_trace(
+                go.Scatter(x=trading_volume_df[trading_volume_df["acquired_disposed_code"] == code]["transaction_date"],
+                           y=trading_volume_df[trading_volume_df["acquired_disposed_code"]
+                                               == code]["inside_trading_volume"],
+                           name=f"Inside Trading Volume ({code})", mode="lines"),
+                secondary_y=False,
+            )
+
+        fig.add_trace(
+            go.Scatter(x=closing_price_df["transaction_date"], y=closing_price_df["close"],
+                       name="Stock Closing Price"),
+            secondary_y=True,
         )
 
         # Set x-axis title
-        fig.update_xaxes(title_text="Date")
+        fig.update_xaxes(title_text=f"Date")
 
-        # Set y-axes titles
+        # Set y-axis titles
         fig.update_yaxes(title_text="Inside Trading Volume", secondary_y=False)
         fig.update_yaxes(title_text="Stock Closing Price", secondary_y=True)
 
+        # Display the plot
         fig.show()
