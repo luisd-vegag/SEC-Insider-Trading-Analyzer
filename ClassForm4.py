@@ -6,10 +6,10 @@ import requests
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
-import plotly.subplots as sp
-import plotly.express as px
 from typing import List
 from bs4 import BeautifulSoup
+import hashlib
+import pyarrow as pa
 
 
 class Form4:
@@ -18,7 +18,7 @@ class Form4:
     # list to store response times
     response_times = []
 
-    def __init__(self, cik: str, start_date: str = None, end_date: str = None) -> None:
+    def __init__(self, cik: str, start_date: str = None, end_date: str = None, days_range: int = 0) -> None:
         """
         Initializes a new instance of the Form4 class.
 
@@ -29,14 +29,20 @@ class Form4:
         """
         base_url = "https://www.sec.gov"
         base_path = "/Archives/edgar/data/"
+        self.parquet_path = 'system/form4/data'
         self.base_url = base_url
         self.base_path = base_path
-        self.cik = cik
-        self.start_date = start_date
-        self.end_date = end_date
+        self.cik = cik.lstrip('0')
         self.operation_ids = set()
         self.form4_links = set()
         self.data = []
+        self.scraped_operation_ids_path = 'system/form4/scraped_operation_ids'
+        self.scraped_operation_ids = []
+        self.records_operation_ids = []
+
+        self.start_date, self.end_date = Form4.calculate_dates(
+            start_date, end_date, days_range)
+
         # set headers to simulate browser request
         self.headers = {
             "Connection": "close",
@@ -59,7 +65,7 @@ class Form4:
         while id_try == True:
             if 'SEC.gov | Request Rate Threshold Exceeded' in title:
                 print(
-                    f"CIK: '{self.cik}'| Fail to scrape form 4 due to SEC.gov Request Rate Threshold Exceeded. Retrying in 60 seg.")
+                    f"CIK: '{self.cik}'| [1]Fail to scrape form 4 due to SEC.gov Request Rate Threshold Exceeded. Retrying in 60 seg.")
                 time.sleep(60)
             else:
                 id_try = False
@@ -87,7 +93,75 @@ class Form4:
                         ref = cols[0].find("a", href=True)
                     if ref:
                         self.operation_ids.add(ref["href"].split("/")[-1])
-        print(f"CIK: '{self.cik}'| Found {len(self.operation_ids)} operations.")
+        self.filter_operation_ids()
+        if len(self.records_operation_ids) > 0:
+            self.operation_ids = [
+                op_id for op_id in self.operation_ids if op_id not in self.records_operation_ids]
+        print(
+            f"CIK: '{self.cik}'| Found {len(self.operation_ids)} new operations.")
+
+    def filter_operation_ids(self):
+        # Read the Parquet files partitioned by 'cik'
+        self.get_scraped_operation_ids()
+        if len(self.scraped_operation_ids) > 0:
+            # Remove already saved operation IDs
+            self.operation_ids = [
+                x for x in self.operation_ids if x not in self.scraped_operation_ids]
+
+    def save_scraped_operation_ids(self):
+        # Create a DataFrame with ids and current date
+        df = pd.DataFrame({'date': datetime.date.today(),
+                           'cik': self.cik, 'operation_id': list(self.operation_ids)})
+
+        # Define the schema with data types for each column
+        schema = pa.schema([
+            ('date', pa.date32()),
+            ('cik', pa.string()),
+            ('operation_id', pa.string())
+        ])
+
+        # Save the DataFrame as a Parquet file partitioned by 'cik'
+        df.to_parquet(self.scraped_operation_ids_path,
+                      partition_cols=['cik'], schema=schema)
+
+    def get_scraped_operation_ids(self):
+        if os.path.exists(self.scraped_operation_ids_path):
+            # Define the schema with data types for each column
+            schema = pa.schema([
+                ('date', pa.date32()),
+                ('cik', pa.string()),
+                ('operation_id', pa.string())
+            ])
+
+            # Read the Parquet files partitioned by 'cik'
+            df = pd.read_parquet(
+                self.scraped_operation_ids_path,
+                columns=['operation_id'],
+                filters=[('cik', '=', self.cik)],
+                schema=schema
+            )
+
+            # Convert operation_id column to a one-dimensional Python list
+            self.scraped_operation_ids = list(df['operation_id'])
+
+    def get_records_operation_ids(self):
+        if os.path.exists(self.parquet_path):
+            # Read the Parquet files into a pandas DataFrame
+            df = pd.read_parquet(self.parquet_path, filters=[
+                                 ('parent_cik', '=', self.cik)])
+            # Read the form4_link column from the DataFrame
+            form4_links_col = df['form4_link']
+
+            # Generate a list with the operation_ids, extracted from the form4_links_col
+            records_operation_ids = []
+            for form4_link in form4_links_col:
+                records_operation_ids.append(form4_link.split("/")[-2])
+
+            # Convert the list to a set to remove duplicates, then convert back to a list and sort
+            records_operation_ids = list(set(records_operation_ids))
+            records_operation_ids.sort()
+
+            self.records_operation_ids = records_operation_ids
 
     def scrape_form4(self) -> None:
         """
@@ -112,7 +186,7 @@ class Form4:
 
                 if 'SEC.gov | Request Rate Threshold Exceeded' in title:
                     print(
-                        f"CIK: '{self.cik}'| Fail to scrape form 4 due to SEC.gov Request Rate Threshold Exceeded. Retrying in 60 seg.")
+                        f"CIK: '{self.cik}'| [2]Fail to scrape form 4 due to SEC.gov Request Rate Threshold Exceeded. Retrying in 60 seg.")
                     time.sleep(60)
                 else:
                     id_try = False
@@ -137,6 +211,7 @@ class Form4:
 
                 # find the link to the FORM 4 document
                 form4_link = None
+                form4_links = []
                 table = soup3.find(
                     "table", {"class": "tableFile", "summary": "Document Format Files"})
                 if table:
@@ -148,7 +223,9 @@ class Form4:
                                     form4_link = self.base_url + self.base_path + self.cik + \
                                         '/' + operation_id + '/' + \
                                         a["href"].split("/")[-1]
-                                    self.get_form4_data(form4_link)
+                                    if form4_link not in form4_links:
+                                        self.get_form4_data(form4_link)
+                                        form4_links.append(form4_link)
                                     break
                 end_time = time.time()
 
@@ -160,14 +237,21 @@ class Form4:
                 else:
                     variance = statistics.variance(response_times)
 
-                if variance > 0.5:
-                    print(f"CIK: '{self.cik}'| Increase delay by 1 sec")
+                if variance > 0.4:
                     delay += 1
-                elif variance < 0.4 and delay > 0:
-                    print(f"CIK: '{self.cik}'| Decrease delay by 1 sec")
+                    print(
+                        f"CIK: '{self.cik}'| Increase delay by 1 to {delay} seconds.")
+
+                elif variance < 0.2 and delay > 0:
                     delay -= 1
+                    print(
+                        f"CIK: '{self.cik}'| Decrease delay by 1 to {delay} seconds.")
 
                 time.sleep(delay)
+        try:
+            self.sync_system_data()
+        except:
+            print(f"Unable to permorm Data Sync for {self.cik}")
 
     def get_form4_data(self, form4_link: str) -> List[dict]:
         """
@@ -264,7 +348,7 @@ class Form4:
             direct_or_indirect_ownership = direct_or_indirect_ownership_tag.text if direct_or_indirect_ownership_tag else ""
 
             self.data.append({
-                "cik": cik_file,
+                "cik": cik_file.lstrip('0'),
                 "parent_cik": self.cik,
                 "name": name,
                 "ticker": ticker,
@@ -287,108 +371,110 @@ class Form4:
                 "form4_link": form4_link
             })
 
-    def add_stock_data(self) -> None:
-        """
-        Adds stock data to the Form 4 data and updates the Form4 instance.
-        """
+    def sync_system_data(self):
         df = pd.DataFrame(self.data)
-        df = df[df['ticker'].notnull()]
-        df['transaction_date'] = pd.to_datetime(
-            df['transaction_date'], format='%Y-%m-%d')
-        min_max_dates = df.groupby('ticker').agg(min_date=('transaction_date', 'min'),
-                                                 max_date=('transaction_date', 'max')).reset_index()
-        # create a dictionary with Ticker as the key and min/max dates as the value
-        stock_date_dict = dict(zip(min_max_dates['ticker'], zip(
-            min_max_dates['min_date'], min_max_dates['max_date'])))
-        # create a list of unique tickers in the dataframe
-        tickers = df['ticker'].unique()
-        ticker_history_pd = pd.DataFrame(
-            columns=['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume', 'stock_ticker'])
-        good_ticker = []
-        bad_ticker = []
-        # loop over each ticker to get the stock prices data from yfinance and append it to the stock prices dataframe
-        for ticker in tickers:
-            min_date, max_date = stock_date_dict[ticker]
-            ticker_history_n = yf.download(
-                ticker, start=min_date, end=max_date)
-            if not ticker_history_n.empty:
-                good_ticker.append(ticker)
-                ticker_history_n['stock_ticker'] = ticker
-                ticker_history_pd = ticker_history_pd.append(ticker_history_n)
-            else:
-                bad_ticker.append(ticker)
-        ticker_history_pd = ticker_history_pd.reset_index()
-        ticker_history_pd = ticker_history_pd.rename(
-            columns={c: c.replace(' ', '_').lower() for c in ticker_history_pd.columns})
-        stock_prices_df = pd.DataFrame(ticker_history_pd)
-        # stock_prices_df = stock_prices_df.reset_index()
-        stock_prices_df['date'] = pd.to_datetime(
-            stock_prices_df['index'], format='%Y-%m-%d')
+        # Define a dictionary with the data types for each column
+        schema = {
+            'cik': 'int',
+            'parent_cik': 'int',
+            'name': 'string',
+            'ticker': 'string',
+            'rptOwnerName': 'string',
+            'rptOwnerCik': 'string',
+            'isDirector': 'bool',
+            'isOfficer': 'bool',
+            'isTenPercentOwner': 'bool',
+            'isOther': 'bool',
+            'officerTitle': 'string',
+            'security_title': 'string',
+            'transaction_date': 'string',
+            'form_type': 'int',
+            'code': 'string',
+            'equity_swap': 'float',
+            'shares': 'float',
+            'acquired_disposed_code': 'string',
+            'shares_owned_following_transaction': 'float',
+            'direct_or_indirect_ownership': 'string',
+            'form4_link': 'string',
+        }
 
-        stock_prices_df = stock_prices_df.drop(['index'], axis=1)
+        # Loop over the columns in the dictionary and convert their data types
+        for col, dtype in schema.items():
+            if col in df.columns:
 
-        df = pd.merge(df, stock_prices_df, how='left', left_on=[
-            'ticker', 'transaction_date'], right_on=['stock_ticker', 'date'])
+                df[col] = df[col].astype(dtype)
 
-        df = df.drop(['date', 'stock_ticker'], axis=1)
+        # Call the generate_hash method on the class itself, not on an instance of the class
+        df = Form4.generate_hash(df)
+        # Select only the unique rows based on the 'hash' column
+        df = df.drop_duplicates(subset=['hash'])
 
-        df['daily_return'] = (df['close'].astype(
-            float) - df['open'].astype(float)) / df['open'].astype(float)
-        df['percent_change'] = df['daily_return'].astype(float) * 100
-        df['range'] = df['high'].astype(float) - df['low'].astype(float)
-        df['average_price'] = (df['high'].astype(
-            float) + df['low'].astype(float)) / 2
+        print(f"Incoming df: {len(df)}")
+        # Check if the Parquet file already exists
+        if os.path.isdir(self.parquet_path):
+            pa_schema = pa.schema([
+                pa.field('cik', pa.int64()),
+                pa.field('parent_cik', pa.int64()),
+                pa.field('name', pa.string()),
+                pa.field('ticker', pa.string()),
+                pa.field('rptOwnerName', pa.string()),
+                pa.field('rptOwnerCik', pa.string()),
+                pa.field('isDirector', pa.bool_()),
+                pa.field('isOfficer', pa.bool_()),
+                pa.field('isTenPercentOwner', pa.bool_()),
+                pa.field('isOther', pa.bool_()),
+                pa.field('officerTitle', pa.string()),
+                pa.field('security_title', pa.string()),
+                pa.field('transaction_date', pa.string()),
+                pa.field('form_type', pa.int64()),
+                pa.field('code', pa.string()),
+                pa.field('equity_swap', pa.float64()),
+                pa.field('shares', pa.float64()),
+                pa.field('acquired_disposed_code', pa.string()),
+                pa.field('shares_owned_following_transaction', pa.float64()),
+                pa.field('direct_or_indirect_ownership', pa.string()),
+                pa.field('form4_link', pa.string()),
+                pa.field('hash', pa.string()),
+            ])
 
-        df['shares_value_usd'] = df['average_price'].astype(float) * \
-            df['shares'].astype(float)
-        for col_name, col_values in df.iteritems():
-            if col_values.dtype == float:
-                df[col_name] = col_values.apply(lambda x: round(x, 2))
+            # Read the existing data from the Parquet file
+            existing_df = pd.read_parquet(
+                path=self.parquet_path, engine='pyarrow', schema=pa_schema, filters=[('parent_cik', '=', int(self.cik))])
 
+            # Convert the 'transaction_date' column to a datetime format
+            existing_df['transaction_date'] = pd.to_datetime(
+                existing_df['transaction_date'], format='%Y-%m-%d')
+
+            # Filter the DataFrame to keep only rows within the specified date range
+            mask = (existing_df['transaction_date'] >= self.start_date) & (
+                existing_df['transaction_date'] <= self.end_date)
+            existing_df = existing_df.loc[mask]
+            print(f"Existing df: {len(existing_df)}")
+        else:
+            a = 0
+            print(f"No Existing df")
+
+        if len(df) > 0:
+            # Write the DataFrame to a directory-based Parquet file
+            if ('existing_df' in locals()):
+                # Reorder the columns of the previous DataFrame to match the current DataFrame
+                existing_df = existing_df[df.columns]
+                df = df[~df['hash'].isin(existing_df['hash'])].dropna()
+            print(f"New df: {len(df)}")
+            if len(df) > 0:
+                # Remove the original index column from the DataFrame
+                df = df.reset_index(drop=True)
+                df.to_parquet(self.parquet_path, partition_cols=[
+                    'parent_cik'], engine='pyarrow')
+
+        if ('existing_df' in locals()):
+            # Concatenate the current DataFrame with the filtered previous DataFrame
+            df = pd.concat([df, existing_df], ignore_index=True)
+        self.save_scraped_operation_ids()
+        # Convert the resulting DataFrame to a list of dictionaries
         self.data = df.to_dict(orient='records')
 
-    def inside_traiding_impact_plot(self) -> None:
-        """
-        Generates a plot of the inside trading impact over time.
-        """
-        df = pd.DataFrame(self.data)
-        # Calculate the total inside trading volume for each day
-        df = df.groupby("transaction_date").agg({"shares_value_usd": "sum"}).rename(
-            columns={"shares_value_usd": "inside_trading_volume"})
-
-        df = df.sort_values(by='transaction_date', ascending=True)
-
-        # Create figure with secondary y-axis
-        fig = sp.make_subplots(specs=[[{"secondary_y": True}]])
-
-        # Add traces
-        fig.add_trace(
-            go.Scatter(x=df["transaction_date"],
-                       y=df["inside_trading_volume"], name="Inside Trading Volume"),
-            secondary_y=False,
-        )
-
-        fig.add_trace(
-            go.Scatter(x=df["transaction_date"],
-                       y=df["close"], name="Stock Closing Price"),
-            secondary_y=True,
-        )
-
-        # Add figure title
-        fig.update_layout(
-            title_text=f"Inside Trading Volume and Stock Closing Price Over Time"
-        )
-
-        # Set x-axis title
-        fig.update_xaxes(title_text="Date")
-
-        # Set y-axes titles
-        fig.update_yaxes(title_text="Inside Trading Volume", secondary_y=False)
-        fig.update_yaxes(title_text="Stock Closing Price", secondary_y=True)
-
-        fig.show()
-
-    def save_to_csv(self, path: str) -> None:
+    def save_to_csv(self, path: str = 'data/saved_form4_date.csv') -> None:
         """
         Saves the Form 4 data to a CSV file.
 
@@ -408,3 +494,65 @@ class Form4:
             print(f"CIK: '{self.cik}'| Saved Form 4 data.")
         else:
             print(f"CIK: '{self.cik}'| There is not Form 4 data.")
+
+    @ staticmethod
+    def generate_hash(pd_df):
+
+        # Remove the original index column from the DataFrame
+        pd_df = pd_df.reset_index(drop=True)
+
+        # Sort the columns in the DataFrame before computing the hash
+        pd_df = pd_df.sort_index(axis=1)
+
+        # Generate a new column with a concatenated string and a SHA-2 hash for each row
+        pd_df['hash'] = pd_df.apply(lambda row: hashlib.sha256(
+            str(row.values).encode('utf-8')).hexdigest(), axis=1)
+
+        return pd_df
+
+    @ staticmethod
+    def calculate_dates(start_date: str = None, end_date: str = None, days_range: int = 0):
+        """
+        Calculates the start and end dates based on the input parameters.
+
+        Parameters:
+        start_date (str): The start date in the format 'yyyy-MM-dd'. Defaults to None.
+        end_date (str): The end date in the format 'yyyy-MM-dd'. Defaults to None.
+        days_range (int): The number of days to subtract from the end date to get the start date.
+
+        Returns:
+        A tuple containing the start and end dates in the format 'yyyy-MM-dd'.
+        """
+        if start_date is not None and end_date is None and days_range > 0:
+            # If start date is specified but end date is not, and days range is specified,
+            # calculate the end date by adding the days range to the start date
+            start_date = datetime.datetime.strptime(start_date, '%Y-%m-%d')
+            end_date = (
+                start_date + datetime.timedelta(days=days_range)).strftime('%Y-%m-%d')
+        elif start_date is None and end_date is None and days_range > 0:
+            # If start date and end date are not specified, but days range is specified,
+            # calculate the end date as today's date and the start date by subtracting the days range from the end date
+            end_date = datetime.datetime.today().strftime('%Y-%m-%d')
+            start_date = (datetime.datetime.today(
+            ) - datetime.timedelta(days=days_range)).strftime('%Y-%m-%d')
+
+        elif start_date is None and end_date is None and days_range > 0:
+            # If start date and end date are not specified, but days range is specified,
+            # calculate the end date as today's date and the start date by subtracting the days range from the end date
+            end_date = datetime.datetime.today().strftime('%Y-%m-%d')
+            start_date = (datetime.datetime.today(
+            ) - datetime.timedelta(days=days_range)).strftime('%Y-%m-%d')
+        elif start_date is None and end_date is not None and days_range == 0:
+            # If start date is not specified, end date is specified, and days range is 0,
+            # set the start date to '1990-01-01'
+            start_date = '1990-01-01'
+        elif start_date is not None and end_date is None and days_range == 0:
+            # If end date is not specified, start date is specified, and days range is 0,
+            # set the end date to the current date
+            end_date = datetime.datetime.today().strftime('%Y-%m-%d')
+        else:
+            # If none of the parameters are specified, do nothing
+            print('THIS COULD TAKE A WHILE SO GRAB A SHACK AND BUCKLE UP!')
+            pass
+
+        return start_date, end_date
