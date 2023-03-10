@@ -535,13 +535,6 @@ class Form4:
             end_date = datetime.datetime.today().strftime('%Y-%m-%d')
             start_date = (datetime.datetime.today(
             ) - datetime.timedelta(days=days_range)).strftime('%Y-%m-%d')
-
-        elif start_date is None and end_date is None and days_range > 0:
-            # If start date and end date are not specified, but days range is specified,
-            # calculate the end date as today's date and the start date by subtracting the days range from the end date
-            end_date = datetime.datetime.today().strftime('%Y-%m-%d')
-            start_date = (datetime.datetime.today(
-            ) - datetime.timedelta(days=days_range)).strftime('%Y-%m-%d')
         elif start_date is None and end_date is not None and days_range == 0:
             # If start date is not specified, end date is specified, and days range is 0,
             # set the start date to '1990-01-01'
@@ -550,9 +543,11 @@ class Form4:
             # If end date is not specified, start date is specified, and days range is 0,
             # set the end date to the current date
             end_date = datetime.datetime.today().strftime('%Y-%m-%d')
-        else:
+        elif start_date is None and end_date is None and days_range == 0:
             # If none of the parameters are specified, do nothing
             print('THIS COULD TAKE A WHILE SO GRAB A SHACK AND BUCKLE UP!')
+        else:
+            # If none of the parameters are specified, do nothing
             pass
 
         return start_date, end_date
